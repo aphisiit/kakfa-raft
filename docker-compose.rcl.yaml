@@ -1,0 +1,523 @@
+services:
+  kong-database:
+    container_name: kong-database
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    restart: always
+    environment:
+      - TZ=Asia/Bangkok
+      - POSTGRES_USER=kong
+      - POSTGRES_DB=kong
+      - POSTGRES_PASSWORD=kong
+    image: postgres:15.4
+    volumes:
+      - kongdb:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready", "-d", "kong"]
+      interval: 30s
+      timeout: 60s
+      retries: 5
+      start_period: 80s
+    networks:
+      - kong-net
+
+  kong-prepare:
+    image: kong:3.6.1
+    restart: on-failure:5
+    depends_on:
+      kong-database:
+        condition: service_healthy
+    container_name: kong-prepare
+    environment:
+      - TZ=Asia/Bangkok
+      - KONG_DATABASE=postgres
+      - KONG_PG_HOST=kong-database
+      - KONG_PG_USER=kong
+      - KONG_PG_PASSWORD=kong
+    command: ["kong", "migrations", "bootstrap", "&&", "kong", "migrations", "up", "&&", "kong", "migrations", "finish"]
+    networks:
+      - kong-net
+
+  kong:
+    image: 393378649433.dkr.ecr.ap-southeast-1.amazonaws.com/protoss-technology/kong-gateway:3.6.2-kafka-plugin
+    container_name: kong
+    restart: always
+    depends_on:
+      kong-database:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 1024M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    environment:
+      - TZ=Asia/Bangkok
+      - KONG_DATABASE=postgres
+      - KONG_PG_HOST=kong-database
+      - KONG_PG_USER=kong
+      - KONG_PG_PASSWORD=kong
+      - KONG_PROXY_ACCESS_LOG=/dev/stdout
+      - KONG_ADMIN_ACCESS_LOG=/dev/stdout
+      - KONG_PROXY_ERROR_LOG=/dev/stderr
+      - KONG_ADMIN_ERROR_LOG=/dev/stderr
+      - KONG_ADMIN_LISTEN=0.0.0.0:8001, 13.229.153.213:8001 # , kongapi.protoss-technology.com:443 #, kongui.protoss-technology.com:8445 ssl http2
+      # - KONG_NGINX_HTTP_LOG_FORMAT=show_everything '$remote_addr - $remote_user [$time_local - $msec] $start_time - $request_time "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent"'
+      - KONG_ADMIN_GUI_SSL_PROTOCOLS=TLSv1.2 TLSv1.3
+      # - KONG_ADMIN_GUI_LISTEN=0.0.0.0:8002, 13.229.153.213:8002, kongui.protoss-technology.com:443
+      - KONG_ADMIN_GUI_PATH=/
+      - KONG_ADMIN_GUI_URL=https://kongui.protoss-technology.com:8445
+      # - KONG_ADMIN_GUI_URL=https://kongui.protoss-technology.com/
+      # - KONG_ADMIN_GUI_SSL_CERT=/opt/kong/protoss-technology.crt
+      # - KONG_ADMIN_GUI_SSL_CERT_KEY=/opt/kong/protoss-technology.key
+    volumes:
+      - /etc/pki/nginx/protoss-technology.crt:/opt/kong/protoss-technology.crt
+      - /etc/pki/nginx/protoss-technology.key:/opt/kong/protoss-technology.key
+    ports:
+      - 8000:8000
+      # - 8443:8443
+      - 8001:8001
+      - 8002:8002
+      # - 8444:8444
+      # - 8445:8445
+    networks:
+      - kong-net
+
+  kafka:
+    # image: docker.io/bitnami/kafka:3.2
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 1024M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    ports:
+      - 9092:9092
+      - 9192:9192
+    volumes:
+      - "kafka_data:/bitnami"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CLIENT:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: CLIENT://kafka:9092,EXTERNAL://kafka:9192
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_NODE_ID: 1
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_LISTENERS: CLIENT://:9092,EXTERNAL://:9192,CONTROLLER://kafka:29093
+      KAFKA_INTER_BROKER_LISTENER_NAME: CLIENT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      CLUSTER_ID: MkszSTJJRTkyOTk1SklPMj
+    networks:
+      - kong-net
+
+  kafka-drop:
+    image: obsidiandynamics/kafdrop:4.0.2
+    container_name: kafka-drop
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '0.256'
+          memory: 256M
+        reservations:
+          cpus: '0.256'
+          memory: 128M
+    depends_on:
+      - kafka
+    ports:
+      - 9000:9000
+    environment:
+      TZ: Asia/Bangkok
+      KAFKA_BROKERCONNECT: kafka:9092
+    networks:
+      - kong-net
+
+  opensearch-node1:
+    image: opensearchproject/opensearch:2.15.0
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 2G
+    labels:
+      app: opensearch-node1
+    environment:
+      - TZ=Asia/Bangkok
+      - cluster.name=opensearch-cluster
+      - node.name=opensearch-node1
+      - discovery.seed_hosts=opensearch-node1,opensearch-node2
+      - cluster.initial_cluster_manager_nodes=opensearch-node1,opensearch-node2
+      - bootstrap.memory_lock=true # along with the memlock settings below, disables swapping
+      - "OPENSEARCH_JAVA_OPTS=-Xms1024m -Xmx1024m" # minimum and maximum Java heap size, recommend setting both to 50% of system RAM
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=U8QfAU7L8Hlr(r}
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536 # maximum number of open files for the OpenSearch user, set to at least 65536 on modern systems
+        hard: 65536
+    volumes:
+      - opensearch-data1:/usr/share/opensearch/data
+    # ports:
+      # - 9200:9200
+      # - 9600:9600 # required for Performance Analyzer
+    networks:
+      - kong-net
+
+  opensearch-node2:
+    image: opensearchproject/opensearch:2.15.0
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 2G
+    labels:
+      app: opensearch-node2
+    environment:
+      - TZ=Asia/Bangkok
+      - cluster.name=opensearch-cluster
+      - node.name=opensearch-node2
+      - discovery.seed_hosts=opensearch-node1,opensearch-node2
+      - cluster.initial_cluster_manager_nodes=opensearch-node1,opensearch-node2
+      - bootstrap.memory_lock=true
+      - "OPENSEARCH_JAVA_OPTS=-Xms1024m -Xmx1024m"
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=U8QfAU7L8Hlr(r}
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - opensearch-data2:/usr/share/opensearch/data
+    networks:
+      - kong-net
+
+  opensearch-dashboards:
+    image: opensearchproject/opensearch-dashboards:2.15.0
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    labels:
+      app: opensearch-dashboards
+    ports:
+      - 5601:5601
+    expose:
+      - "5601"
+    environment:
+      OPENSEARCH_HOSTS: '["https://opensearch-node1:9200","https://opensearch-node2:9200"]' # must be a string with no spaces when specified as an environment variable
+    networks:
+      - kong-net
+
+  prometheus:
+    container_name: prometheus
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    image: prom/prometheus:v2.53.1
+    volumes:
+      - ./prometheus/prometheus-config/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./prometheus/data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - --web.enable-remote-write-receiver
+      - --enable-feature=exemplar-storage
+    # args:
+      # - '--storage.tsdb.retention.time=30d'
+    ports:
+      - 9090:9090
+    restart: always
+    networks:
+      - kong-net
+
+  grafana:
+    container_name: grafana
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    image: grafana/grafana:11.1.1
+    restart: always
+    environment:
+      GF_DIAGNOSTICS_TRACING_ENABLED: true
+      GF_DIAGNOSTICS_TRACING_FILE: /tmp/trace.out
+    volumes:
+      - ./grafana/data:/var/lib/grafana
+      - ./grafana/logs:/var/log/grafana
+    ports:
+      - 3000:3000
+    external_links:
+      - prometheus
+    networks:
+      - kong-net
+
+  tempo:
+    container_name: tempo
+    image: grafana/tempo:2.5.0
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 512M
+        reservations:
+          cpus: '0.15'
+          memory: 128M
+    command:
+      - "-config.file=/etc/tempo.yaml"
+    volumes:
+      - ./tempo/config/tempo.yaml:/etc/tempo.yaml
+      - ./tempo/data:/tmp/tempo
+    ports:
+      - 4317:4317
+    networks:
+      - kong-net
+
+  sonarqube:
+    container_name: sonarqube
+    image: sonarqube:10.0.0-community
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 2048M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    restart: always
+    depends_on:
+      - sonar_db
+    environment:
+      SONAR_JDBC_URL: jdbc:postgresql://sonar_db:5432/sonar
+      SONAR_JDBC_USERNAME: sonar
+      SONAR_JDBC_PASSWORD: sonar
+    ports:
+      - "9001:9000"
+    volumes:
+      - sonarqube_conf:/opt/sonarqube/conf
+      - sonarqube_data:/opt/sonarqube/data
+      - sonarqube_extensions:/opt/sonarqube/extensions
+      - sonarqube_logs:/opt/sonarqube/logs
+      - sonarqube_temp:/opt/sonarqube/temp
+    networks:
+      - kong-net
+
+  sonar_db:
+    container_name: sonar_db
+    image: postgres:16.3-alpine3.19
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    restart: always
+    environment:
+      TZ: Asia/Bangkok
+      POSTGRES_USER: sonar
+      POSTGRES_PASSWORD: sonar
+      POSTGRES_DB: sonar
+    volumes:
+      - sonar_db:/var/lib/postgresql
+      - sonar_db_data:/var/lib/postgresql/data
+    networks:
+      - kong-net
+
+
+  logstash:
+    image: opensearchproject/logstash-oss-with-opensearch-output-plugin:8.9.0
+    healthcheck:
+      test: curl http://localhost:9600/?pretty
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    restart: always
+    command: logstash -f /config-dir/logstash.conf
+    volumes:
+      - ./logstash/config:/config-dir
+    # ports:
+      # - "8900:8900"
+    networks:
+      - kong-net
+
+  oauth2-proxy:
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    image: bitnami/oauth2-proxy:7.6.0
+    restart: always
+    command:
+      - --http-address
+      - 0.0.0.0:4180
+      - --cookie-refresh=1m
+      - --cookie-expire=10m
+    environment:
+      OAUTH2_PROXY_UPSTREAMS: http://kong:8002/
+      OAUTH2_PROXY_PROVIDER_DISPLAY_NAME: Protoss - Kong
+      OAUTH2_PROXY_PROVIDER: oidc
+      OAUTH2_PROXY_OIDC_ISSUER_URL: https://keycloak.protoss-group.com/auth/realms/side-proxy
+      OAUTH2_PROXY_CLIENT_ID: side-proxy-svc
+      OAUTH2_PROXY_CLIENT_SECRET: CgrqNHrjkGxaN1AGWXpOalssGIyLC7Kz
+      OAUTH2_PROXY_OIDC_EMAIL_CLAIM: sub
+      OAUTH2_PROXY_PASS_ACCESS_TOKEN: true
+      OAUTH2_PROXY_SET_XAUTHREQUEST: true
+      OAUTH2_PROXY_SET_AUTHORIZATION_HEADER: true
+      OAUTH2_PROXY_EMAIL_DOMAINS: '*'
+      OAUTH2_PROXY_REDIRECT_URL: https://kongui.protoss-technology.com:8445/oauth2/callback
+      OAUTH2_PROXY_COOKIE_SECRET: 16+iZaY+hhIRsMLcB+tvT7o6aXK7TQ==
+      OAUTH2_PROXY_SKIP_PROVIDER_BUTTON: true
+      OAUTH2_PROXY_COOKIE_NAME: SESSIONKONGUI
+      OAUTH2_PROXY_COOKIE_SAMESITE: lax
+      OAUTH2_PROXY_COOKIE_DOMAINS: kongui.protoss-technology.com
+      OAUTH2_PROXY_COOKIE_CSRF_PER_REQUEST: true
+      OAUTH2_PROXY_SKIP_AUTH_PREFLIGHT: true
+    ports:
+      - 4180:4180
+    networks:
+      - kong-net
+
+  oauth2-proxy-kongapi:
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    image: bitnami/oauth2-proxy:7.6.0
+    restart: always
+    command:
+      - --http-address
+      - 0.0.0.0:4180
+      - --cookie-refresh=1m
+      - --cookie-expire=10m
+    environment:
+      OAUTH2_PROXY_UPSTREAMS: http://kong:8001/
+      OAUTH2_PROXY_PROVIDER_DISPLAY_NAME: Protoss - Kong
+      OAUTH2_PROXY_PROVIDER: oidc
+      OAUTH2_PROXY_OIDC_ISSUER_URL: https://keycloak.protoss-group.com/auth/realms/side-proxy
+      OAUTH2_PROXY_CLIENT_ID: side-proxy-svc
+      OAUTH2_PROXY_CLIENT_SECRET: CgrqNHrjkGxaN1AGWXpOalssGIyLC7Kz
+      OAUTH2_PROXY_OIDC_EMAIL_CLAIM: sub
+      OAUTH2_PROXY_PASS_ACCESS_TOKEN: true
+      OAUTH2_PROXY_SET_XAUTHREQUEST: true
+      OAUTH2_PROXY_SET_AUTHORIZATION_HEADER: true
+      OAUTH2_PROXY_PASS_AUTHORIZATION_HEADER: true
+      OAUTH2_PROXY_EMAIL_DOMAINS: '*'
+      OAUTH2_PROXY_REDIRECT_URL: https://kongui.protoss-technology.com:8444/oauth2/callback
+      OAUTH2_PROXY_COOKIE_SECRET: 16+iZaY+hhIRsMLcB+tvT7o6aXK7TQ==
+      OAUTH2_PROXY_SKIP_PROVIDER_BUTTON: true
+      OAUTH2_PROXY_COOKIE_NAME: SESSIONKONGUI
+      OAUTH2_PROXY_COOKIE_SAMESITE: lax
+      OAUTH2_PROXY_COOKIE_DOMAINS: kongui.protoss-technology.com
+      OAUTH2_PROXY_COOKIE_CSRF_PER_REQUEST: true
+      OAUTH2_PROXY_SKIP_AUTH_PREFLIGHT: true
+      OAUTH2_PROXY_SKIP_AUTH_REGEX: "^/$"
+    ports:
+      - 4280:4180
+    networks:
+      - kong-net
+
+  kafka-consumer:
+    image: aphisiit/spring-kafka-consumer:1.1.0
+    deploy:
+      resources:
+        limits:
+          cpus: '0.256'
+          memory: 256M
+        reservations:
+          cpus: '0.256'
+          memory: 128M
+    environment:
+      TZ: Asia/Bangkok
+      KAFKA_BROKER: kafka:9092
+    networks:
+      - kong-net
+
+  kafka-producer:
+    image: aphisiit/spring-kafka-producer:1.1.0
+    deploy:
+      resources:
+        limits:
+          cpus: '0.256'
+          memory: 256M
+        reservations:
+          cpus: '0.256'
+          memory: 128M
+    environment:
+      TZ: Asia/Bangkok
+      KAFKA_HOST: kafka
+      KAFKA_PORT: 9092
+    ports:
+      - 8899:8080
+    networks:
+      - kong-net
+
+volumes:
+  kongdb:
+  zookeeper_data:
+    driver: local
+  kafka_data:
+    driver: local
+  opensearch-data1:
+  opensearch-data2:
+  sonarqube_conf:
+  sonarqube_data:
+  sonarqube_extensions:
+  sonarqube_logs:
+  sonarqube_temp:
+  sonar_db:
+  sonar_db_data:
+
+networks:
+  kong-net:
+    driver: bridge
