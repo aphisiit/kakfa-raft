@@ -1,55 +1,133 @@
 services:
-  controller-1:
+  kafka:
     image: confluentinc/cp-kafka:7.5.0
-    hostname: controller-1
-    container_name: controller-1
+    container_name: kafka
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 1024M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    # ports:
+    #   - 9092:9092
+    #   - 9192:9192
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+      - kafka_config:/etc/kafka
     environment:
-      KAFKA_PROCESS_ROLES: "controller"
+      KAFKA_BROKER_ID: 1
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CLIENT:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: CLIENT://kafka:9092,EXTERNAL://kafka:9192
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_NODE_ID: 1
-      KAFKA_LISTENERS: "CONTROLLER://controller-1:29092"
-      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@controller-1:29092"
-      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
-      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_LISTENERS: CLIENT://:9092,EXTERNAL://:9192,CONTROLLER://kafka:29093
+      KAFKA_INTER_BROKER_LISTENER_NAME: CLIENT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      CLUSTER_ID: MkszSTJJRTkyOTk1SklPMj
     networks:
       - internal-net
 
-  broker-1:
-    image: confluentinc/cp-kafka:7.5.0
-    hostname: broker-1
-    container_name: broker-1
-    environment:
-      KAFKA_NODE_ID: 4
-      KAFKA_PROCESS_ROLES: "broker"
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
-      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://broker-1:9092" # Required for brokers
-      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@controller-1:29092"
-      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
-      KAFKA_LISTENERS: "PLAINTEXT://broker-1:9092"
-      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
-      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
-    networks:
-      - internal-net
-
-  kafka-ui:
-    container_name: kafka-ui
-    image: provectuslabs/kafka-ui:v0.7.2    
-    ports:
-      - 8080:8080
-    environment:
-      DYNAMIC_CONFIG_ENABLED: 'true'
-    networks:
-      - internal-net
+  # kafka-ui:
+  #   container_name: kafka-ui
+  #   image: provectuslabs/kafka-ui:v0.7.2    
+  #   ports:
+  #     - 8080:8080
+  #   environment:
+  #     DYNAMIC_CONFIG_ENABLED: 'true'
+  #   networks:
+  #     - internal-net
 
   kafka-drop:
-    container_name: kafka-drop
     image: obsidiandynamics/kafdrop:4.0.2
+    deploy:
+      resources:
+        limits:
+          cpus: '0.256'
+          memory: 256M
+        reservations:
+          cpus: '0.256'
+          memory: 128M
     ports:
       - 9000:9000
     environment:
-      KAFKA_BROKERCONNECT: broker-1:9092
+      TZ: Asia/Bangkok
+      KAFKA_BROKERCONNECT: kafka:9092
       SERVER_SERVLET_CONTEXTPATH: '/'
     networks:
       - internal-net
+
+  producer:
+    image: aphisiit/spring-kafka-producer:1.1.0
+    depends_on:
+      - kafka
+    deploy:
+      resources:
+        limits:
+          cpus: '0.256'
+          memory: 256M
+        reservations:
+          cpus: '0.256'
+          memory: 128M
+    environment:
+      TZ: Asia/Bangkok
+      KAFKA_HOST: kafka
+      KAFKA_PORT: 9092
+    ports:
+      - 8080:8080
+    networks:
+      - internal-net
+
+  consumer:
+    image: aphisiit/spring-kafka-consumer:1.1.0
+    depends_on:
+      - kafka
+    deploy:
+      resources:
+        limits:
+          cpus: '0.256'
+          memory: 256M
+        reservations:
+          cpus: '0.256'
+          memory: 128M
+    environment:
+      TZ: Asia/Bangkok
+      KAFKA_BROKER: 'kafka:9092'
+    ports:
+      - 9092:9092
+    networks:
+      - internal-net
+
+  python:
+    container_name: python
+    deploy:
+      resources:
+        limits:
+          cpus: '0.256'
+          memory: 256M
+        reservations:
+          cpus: '0.256'
+          memory: 128M
+    image: aphisiit/debian:12-python-vim
+    environment:
+      TZ: Asia/Bangkok
+    command: ["/bin/sh", "-c", "sleep 60m"]
+    networks:
+      - internal-net
+
+volumes:
+  kafka_config:
+    driver: local
+  kafka_data:
+    driver: local
 
 networks:
   internal-net:
